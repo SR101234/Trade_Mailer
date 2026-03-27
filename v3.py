@@ -146,7 +146,7 @@ def generate_single_pdf_from_template(filename, top_left_date, email_header_date
     # Right-aligned Date
     c.drawRightString(right_margin, y_pos_from, email_header_date)
     
-    # Email Body Content
+    # Email Body Content 
     c.setFont("Helvetica", 10)
     c.setFillColorRGB(0.35, 0.1, 0.35) # Purple text
     
