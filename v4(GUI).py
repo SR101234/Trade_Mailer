@@ -132,9 +132,10 @@ class OrderGeneratorApp(ctk.CTk):
                 lambda row: row['Quantity'] if str(row['Transaction Type']).strip().upper() == 'BUY' else -row['Quantity'], 
                 axis=1
             )
-            filtered_df = filtered_df.sort_values(by=['Ucc Code', 'Symbol Name', 'DateTime'])
             
-            def bucket_and_aggregate(group):
+            # --- NEW BUCKETING LOGIC ---
+            def assign_bucket_ids(group):
+                group = group.sort_values('DateTime')
                 bucket_ids = []
                 current_bucket_start = None
                 bucket_id = 1
@@ -144,19 +145,40 @@ class OrderGeneratorApp(ctk.CTk):
                         bucket_id += 1
                     bucket_ids.append(bucket_id)
                 group['Bucket_ID'] = bucket_ids
-                aggregated = group.groupby('Bucket_ID').agg(
-                    Client_Name=('Client Name', 'first'),
-                    Bucket_Start_Time=('DateTime', 'min'),
-                    Net_Quantity=('Signed_Quantity', 'sum')
-                )
-                return aggregated
+                return group
 
-            buckets_df = filtered_df.groupby(['Ucc Code', 'Symbol Name']).apply(bucket_and_aggregate).reset_index()
-            buckets_df.to_excel('processed_hourly_buckets.xlsx', index=False)
+            filtered_df = filtered_df.groupby('Ucc Code', group_keys=False).apply(assign_bucket_ids)
+
+            trade_summary = filtered_df.groupby(['Ucc Code', 'Bucket_ID', 'Symbol Name']).agg(
+                Client_Name=('Client Name', 'first'),
+                Bucket_Start_Time=('DateTime', 'min'),
+                Net_Quantity=('Signed_Quantity', 'sum')
+            ).reset_index()
+
+            valid_trades = trade_summary[trade_summary['Net_Quantity'] != 0].copy()
+
+            def compile_bucket(group):
+                trades = []
+                for _, row in group.iterrows():
+                    action = "Buy" if row['Net_Quantity'] > 0 else "Sell"
+                    qty = abs(row['Net_Quantity'])
+                    trades.append({'action': action, 'quantity': qty, 'symbol': row['Symbol Name']})
+                    raw_name = str(group['Client_Name'].iloc[0])
+                    formatted_name = raw_name.title()
+                
+                return pd.Series({
+                    'Client_Name': formatted_name,
+                    'Bucket_Start_Time': group['Bucket_Start_Time'].min(),
+                    'Trades': trades
+                })
+
+            if valid_trades.empty:
+                buckets_df = pd.DataFrame()
+            else:
+                buckets_df = valid_trades.groupby(['Ucc Code', 'Bucket_ID']).apply(compile_bucket).reset_index()
 
             self.update_gui_status("Step 2: Loading Emails and Template...", 0.3)
             
-            # Load Emails
             try:
                 emails_df = pd.read_excel(emails_file)
             except Exception:
@@ -164,7 +186,6 @@ class OrderGeneratorApp(ctk.CTk):
                 
             os.makedirs(output_dir, exist_ok=True)
             
-            # Load Template
             try:
                 cached_template = ImageReader(template_file)
             except Exception as e:
@@ -172,36 +193,52 @@ class OrderGeneratorApp(ctk.CTk):
                 self.after(0, lambda: self.start_btn.configure(state="normal"))
                 return
             
-            merged_df = pd.merge(buckets_df, emails_df, left_on='Ucc Code', right_on='UCC', how='left')
-            
-            # Count valid PDFs for progress bar calculation
-            valid_rows = merged_df[merged_df['Net_Quantity'] != 0]
-            total_pdfs = len(valid_rows)
-            
-            if total_pdfs == 0:
+            if buckets_df.empty:
                 self.update_gui_status("No valid trades found to generate PDFs.", 1.0, color="orange")
                 self.after(0, lambda: self.start_btn.configure(state="normal"))
                 return
 
+            merged_df = pd.merge(buckets_df, emails_df, left_on='Ucc Code', right_on='UCC', how='left')
+            total_pdfs = len(merged_df)
+            
             self.update_gui_status(f"Generating {total_pdfs} PDFs...", 0.4)
             
             pdf_count = 0
-            for index, row in valid_rows.iterrows():
-                action = "Buy" if row['Net_Quantity'] > 0 else "Sell"
-                quantity = abs(row['Net_Quantity'])
+            last_top_left_dt = None  # Track the last generated time to enforce the gap
+            
+            for index, row in merged_df.iterrows():
                 
                 start_time = pd.to_datetime(row['Bucket_Start_Time'])
                 offset_minutes = random.choice([2, 3])
                 email_time = start_time - timedelta(minutes=offset_minutes)
                 
-                top_left_date = email_time.strftime("%d/%m/%Y,%H:%M")
-                email_header_date = email_time.strftime("%a, %b %d, %Y at %I:%M %p")
+                # --- UPDATED LOGIC: Staggered timings (15:30 to 16:30 with >= 2 min gap) ---
+                base_1530 = start_time.replace(hour=15, minute=30, second=0)
+                max_1630 = start_time.replace(hour=16, minute=30, second=0)
+
+                # If it's the very first PDF, or the first PDF of a new date
+                if last_top_left_dt is None or last_top_left_dt.date() != base_1530.date():
+                    top_left_dt = base_1530 + timedelta(minutes=random.randint(0, 3))
+                else:
+                    # Enforce a 2-minute gap from the last PDF, plus 0-3 random extra minutes
+                    min_next_time = last_top_left_dt + timedelta(minutes=2)
+                    top_left_dt = min_next_time + timedelta(minutes=random.randint(0, 3))
+                    
+                    # Safety catch: Cap at 16:30 
+                    if top_left_dt > max_1630:
+                        top_left_dt = max_1630
                 
+                last_top_left_dt = top_left_dt # Update tracker
+                
+                top_left_date = f"{top_left_dt.strftime('%d/%m/%Y')},{top_left_dt.hour}:{top_left_dt.strftime('%M')}"
+                email_header_date = f"{email_time.strftime('%a, %b %d, %Y at')} {email_time.strftime('%I').lstrip('0')}:{email_time.strftime('%M %p')}"
+                # -------------------------------------------------------------------------
+
                 client_email = row.get('EMAIL')
                 if pd.isna(client_email):
                     client_email = "client@example.com"
                 
-                filename = f"{output_dir}/{row['Ucc Code']}_{row['Symbol Name']}_{email_time.strftime('%H%M%S')}.pdf"
+                filename = f"{output_dir}/{row['Client_Name']}_{row['Ucc Code']}_{top_left_dt.strftime('%H%M%S')}.pdf"
                 
                 self.generate_single_pdf_from_template(
                     filename=filename,
@@ -209,30 +246,25 @@ class OrderGeneratorApp(ctk.CTk):
                     email_header_date=email_header_date,
                     client_name=row['Client_Name'],
                     client_email=client_email,
-                    action=action,
-                    quantity=quantity,
-                    stock_code=row['Symbol Name'],
+                    trades_list=row['Trades'],
                     ucc=row['Ucc Code'],
                     template_obj=cached_template
                 )
                 
                 pdf_count += 1
-                
-                # Update progress bar (mapping 0.4 to 1.0)
                 progress = 0.4 + (0.6 * (pdf_count / total_pdfs))
                 self.update_gui_status(f"Generated {pdf_count} of {total_pdfs} PDFs...", progress)
 
-            self.update_gui_status(f"Success! {pdf_count} PDFs saved to {output_dir}", 1.0, color="#2FA572") # Green
+            self.update_gui_status(f"Success! {pdf_count} PDFs saved to:\n{output_dir}", 1.0, color="#2FA572")
 
         except Exception as e:
             self.update_gui_status(f"Error: {str(e)}", color="red")
         
         finally:
-            # Re-enable the button when done or if it crashed
             self.after(0, lambda: self.start_btn.configure(state="normal"))
 
-    # --- Your fine-tuned PDF generation logic ---
-    def generate_single_pdf_from_template(self, filename, top_left_date, email_header_date, client_name, client_email, action, quantity, stock_code, ucc, template_obj):
+    # --- PDF GENERATION LOGIC ---
+    def generate_single_pdf_from_template(self, filename, top_left_date, email_header_date, client_name, client_email, trades_list, ucc, template_obj):
         c = canvas.Canvas(filename, pagesize=A4)
         width, height = A4
         
@@ -243,27 +275,35 @@ class OrderGeneratorApp(ctk.CTk):
         
         c.setFillColorRGB(0, 0, 0)
         c.setFont("Helvetica", 8)
-        c.drawString(left_margin, height - 0.3 * inch, top_left_date)
+        c.drawString(left_margin - 0.3 * inch, height - 0.3 * inch, top_left_date)
         
         c.setFont("Helvetica-Bold", 9)
         y_pos_from = height - 1.8 * inch
-        c.drawString(left_margin, y_pos_from, str(client_name))
+        c.drawString(left_margin - 0.14 * inch, y_pos_from, str(client_name))
         
         name_width = c.stringWidth(str(client_name), "Helvetica-Bold", 9)
         c.setFont("Helvetica", 9)
-        c.drawString(left_margin + name_width + 4 , y_pos_from, f"<{client_email}>")
+        c.drawString(left_margin + name_width - 0.1 * inch, y_pos_from, f"<{client_email}>")
         
-        c.drawRightString(right_margin, y_pos_from, email_header_date)
+        c.drawRightString(right_margin + 0.14 * inch, y_pos_from, email_header_date)
         
-        c.setFont("Helvetica", 10)
-        c.setFillColorRGB(0.35, 0.1, 0.35)
+        c.setFont("Helvetica", 8)
+        c.setFillColorRGB(0, 0, 0)
         
         y_pos_body_start = height - 2.5 * inch
         
-        c.drawString(left_margin, y_pos_body_start, "Dear Team,")
-        c.drawString(left_margin, y_pos_body_start - 15, f"{action} {int(quantity)} {str(stock_code).lower()} at cmp")
-        c.drawString(left_margin, y_pos_body_start - 35, str(client_name))
-        c.drawString(left_margin, y_pos_body_start - 55, str(ucc))
+        c.drawString(left_margin, y_pos_body_start, "Dear Mam/Sir")
+        c.drawString(left_margin, y_pos_body_start - 25, "Please execute below order-")
+        
+        y_offset = 38
+        for trade in trades_list:
+            c.drawString(left_margin, y_pos_body_start - y_offset, f"{trade['action']} {int(trade['quantity'])} {str(trade['symbol']).lower()} at cmp")
+            y_offset += 12 
+        
+        y_offset += 15 
+        c.drawString(left_margin, y_pos_body_start - y_offset, "Regards")
+        c.drawString(left_margin, y_pos_body_start - y_offset - 12, f"{client_name} ")
+        c.drawString(left_margin, y_pos_body_start - y_offset - 24, str(ucc))
         
         c.save()
 
