@@ -1,8 +1,9 @@
 import pandas as pd
 from datetime import timedelta
 import random
+import string
 from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 import os
@@ -265,8 +266,8 @@ class OrderGeneratorApp(ctk.CTk):
 
     # --- PDF GENERATION LOGIC ---
     def generate_single_pdf_from_template(self, filename, top_left_date, email_header_date, client_name, client_email, trades_list, ucc, template_obj):
-        c = canvas.Canvas(filename, pagesize=A4)
-        width, height = A4
+        c = canvas.Canvas(filename, pagesize=LETTER)
+        width, height = LETTER
         
         c.drawImage(template_obj, 0, 0, width=width, height=height)
         
@@ -277,14 +278,15 @@ class OrderGeneratorApp(ctk.CTk):
         c.setFont("Helvetica", 8)
         c.drawString(left_margin - 0.3 * inch, height - 0.3 * inch, top_left_date)
         
-        c.setFont("Helvetica-Bold", 9)
-        y_pos_from = height - 1.8 * inch
-        c.drawString(left_margin - 0.14 * inch, y_pos_from, str(client_name))
+        c.setFont("Helvetica-Bold", 10)
+        y_pos_from = height - 1.75 * inch
+        c.drawString(left_margin - 0.12 * inch, y_pos_from, str(client_name))
         
-        name_width = c.stringWidth(str(client_name), "Helvetica-Bold", 9)
-        c.setFont("Helvetica", 9)
+        name_width = c.stringWidth(str(client_name), "Helvetica-Bold", 10)
+        c.setFont("Helvetica", 10)
+
         c.drawString(left_margin + name_width - 0.1 * inch, y_pos_from, f"<{client_email}>")
-        
+        c.setFont("Helvetica", 9)
         c.drawRightString(right_margin + 0.14 * inch, y_pos_from, email_header_date)
         
         c.setFont("Helvetica", 8)
@@ -304,6 +306,22 @@ class OrderGeneratorApp(ctk.CTk):
         c.drawString(left_margin, y_pos_body_start - y_offset, "Regards")
         c.drawString(left_margin, y_pos_body_start - y_offset - 12, f"{client_name} ")
         c.drawString(left_margin, y_pos_body_start - y_offset - 24, str(ucc))
+        
+        # --- ADD RANDOMIZED FOOTER URL ---
+        # Generate random values for ik (10 hex chars) and permmsgid/simpl (19 digits)
+        random_ik = "8104d236f3"
+        random_msg_num = ''.join(random.choices(string.digits, k=19))
+        
+        footer_url = f"https://mail.google.com/mail/u/0/?ik={random_ik}&view=pt&search=all&permmsgid=msg-f:{random_msg_num}&simpl=msg-f:{random_msg_num}"
+        
+        c.setFont("Helvetica", 7.65)  # Use Courier at size 8 to make this very long URL fit on page
+        c.setFillColorRGB(0, 0, 0)
+        
+        # Position near bottom left edge.
+        footer_y_pos = 0.22 * inch
+        # Use a slightly wider left margin for the URL to avoid overlap with existing body text
+        c.drawString(left_margin - 0.05 * inch, footer_y_pos, footer_url)
+        # --------------------------------------------------------------------------------
         
         c.save()
 
