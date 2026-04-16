@@ -8,6 +8,8 @@ from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 import os
 import threading
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 import customtkinter as ctk
 from tkinter import filedialog
@@ -165,7 +167,7 @@ class OrderGeneratorApp(ctk.CTk):
                     qty = abs(row['Net_Quantity'])
                     trades.append({'action': action, 'quantity': qty, 'symbol': row['Symbol Name']})
                     raw_name = str(group['Client_Name'].iloc[0])
-                    formatted_name = raw_name.title()
+                    formatted_name = " ".join(raw_name.split()).title()
                 
                 return pd.Series({
                     'Client_Name': formatted_name,
@@ -275,26 +277,30 @@ class OrderGeneratorApp(ctk.CTk):
         right_margin = width - 0.6 * inch
         
         c.setFillColorRGB(0, 0, 0)
-        c.setFont("Helvetica", 8)
+        pdfmetrics.registerFont(TTFont('ArialMT', 'arial.ttf'))
+        c.setFont("ArialMT", 8)
+
         c.drawString(left_margin - 0.3 * inch, height - 0.3 * inch, top_left_date)
-        
-        c.setFont("Helvetica-Bold", 10)
-        y_pos_from = height - 1.75 * inch
+        pdfmetrics.registerFont(TTFont('Arial-Bold', 'arialbd.ttf'))
+        c.setFont("Arial-Bold", 9)
+        y_pos_from = height - 1.68 * inch
         c.drawString(left_margin - 0.12 * inch, y_pos_from, str(client_name))
         
-        name_width = c.stringWidth(str(client_name), "Helvetica-Bold", 10)
-        c.setFont("Helvetica", 10)
+        name_width = c.stringWidth(str(client_name), "Arial-Bold", 9)
+        pdfmetrics.registerFont(TTFont('ArialMT', 'arial.ttf'))
+        
+        c.setFont("ArialMT", 9)
 
         c.drawString(left_margin + name_width - 0.1 * inch, y_pos_from, f"<{client_email}>")
-        c.setFont("Helvetica", 9)
+        c.setFont("ArialMT", 9)
         c.drawRightString(right_margin + 0.14 * inch, y_pos_from, email_header_date)
         
-        c.setFont("Helvetica", 8)
+        c.setFont("ArialMT", 9)
         c.setFillColorRGB(0, 0, 0)
         
         y_pos_body_start = height - 2.5 * inch
         
-        c.drawString(left_margin, y_pos_body_start, "Dear Mam/Sir")
+        c.drawString(left_margin, y_pos_body_start, "Dear Team,")
         c.drawString(left_margin, y_pos_body_start - 25, "Please execute below order-")
         
         y_offset = 38
